@@ -6,6 +6,7 @@
 import uuid
 import sqlite3
 
+from ...base.handlers import IPythonHandler
 from tornado import web
 
 from traitlets.config.configurable import LoggingConfigurable
@@ -22,6 +23,8 @@ class SessionManager(LoggingConfigurable):
     _cursor = None
     _connection = None
     _columns = {'session_id', 'path', 'kernel_id'}
+    
+    _channels = {}
     
     @property
     def cursor(self):
@@ -206,3 +209,20 @@ class SessionManager(LoggingConfigurable):
         session = self.get_session(session_id=session_id)
         self.kernel_manager.shutdown_kernel(session['kernel']['id'])
         self.cursor.execute("DELETE FROM session WHERE session_id=?", (session_id,))
+        if session_id in self._channels:
+            socket = self._channels[session_id]
+            socket.close()
+            del self._channels[session_id]
+
+    def get_channel(self, session_id):
+        if session_id in self._channels:
+            return self._channels[session_id]
+        else:
+            return None
+
+    def close_channel(self, session_id):
+        self._channels[session_id].close()
+        del self._channels[session_id]
+
+    def set_channel(self, session_id, socket):
+        self._channels[session_id] = socket

@@ -27,10 +27,11 @@ define(function (require) {
     var rawcell_celltoolbar = require('notebook/js/celltoolbarpresets/rawcell');
     var slideshow_celltoolbar = require('notebook/js/celltoolbarpresets/slideshow');
     var scrollmanager = require('notebook/js/scrollmanager');
-    var commandpalette = require('notebook/js/commandpalette');
+    var remote = require('services/sessions/remote');
 
     /**
      * Contains and manages cells.
+     * 
      * @class Notebook
      * @param {string}          selector
      * @param {object}          options - Dictionary of keyword arguments.  
@@ -56,6 +57,7 @@ define(function (require) {
         this.save_widget = options.save_widget;
         this.tooltip = new tooltip.Tooltip(this.events);
         this.ws_url = options.ws_url;
+        this.master_url = options.master_url;
         this._session_starting = false;
         this.last_modified = null;
 
@@ -114,6 +116,7 @@ define(function (require) {
         this.next_prompt_number = 1;
         this.session = null;
         this.kernel = null;
+        this.remote = null;
         this.kernel_busy = false;
         this.clipboard = null;
         this.undelete_backup = null;
@@ -170,8 +173,7 @@ define(function (require) {
         // i) provide a margin between the last cell and the end of the notebook
         // ii) to prevent the div from scrolling up when the last cell is being
         // edited, but is too low on the page, which browsers will do automatically.
-        var end_space = $('<div/>')
-            .addClass('end_space');
+        var end_space = $('<div/>').addClass('end_space');
         end_space.dblclick(function (e) {
             var ncells = that.ncells();
             that.insert_cell_below('code',ncells-1);
@@ -260,6 +262,16 @@ define(function (require) {
             that.kernel_busy = true;
         });
 
+        this.events.on('exec.Remote', function(event, data) {
+          console.log('exec.Remote', data);
+          var cells = data.exec;
+          for (var i = 0; i < cells.length; i++) {
+            that.scroll_to_cell(cells[i], 1000);
+            that.select(cells[i]);
+            that.execute_cell();
+          }
+        });
+
         var collapse_time = function (time) {
             var app_height = $('#ipython-main-app').height(); // content height
             var splitter_height = $('div#pager_splitter').outerHeight(true);
@@ -320,11 +332,6 @@ define(function (require) {
         };
     };
     
-
-    Notebook.prototype.show_command_palette = function() {
-        var x = new commandpalette.CommandPalette(this);
-    };
-
     /**
      * Trigger a warning dialog about missing functionality from newer minor versions
      */
@@ -667,11 +674,11 @@ define(function (require) {
             }
             var current_selection = this.get_selected_cells();
             for (var i=0; i<current_selection.length; i++) {
-                current_selection[i].unselect();
+                current_selection[i].unselect()
             }
 
             var cell = this._select(index);
-            cell.selection_anchor = true;
+            cell.selection_anchor = true
         }
         return this;
     };
@@ -738,7 +745,7 @@ define(function (require) {
         var current_selection = this.get_selected_cells();
         for (var i=0; i<current_selection.length; i++) {
             if (!current_selection[i].selected) {
-                current_selection[i].unselect();
+                current_selection[i].unselect()
             }
         }
     };
@@ -821,7 +828,7 @@ define(function (require) {
         var cell = this.get_selected_cell();
         if (cell === null) {return;}  // No cell is selected
         cell.ensure_focused();
-    };
+    }
 
     /**
      * Focus the currently selected cell.
@@ -905,75 +912,6 @@ define(function (require) {
         return this;
     };
 
-
-    /**
-     * Delete cells from the notebook
-     *
-     * @param {Array} [indices] - the numeric indices of cells to delete.
-     * @return {Notebook} This notebook
-     */
-    Notebook.prototype.delete_cells = function(indices) {
-        if (indices === undefined) {
-            indices = this.get_selected_indices();
-        }
-
-        this.undelete_backup = [];
-
-        var cursor_ix_before = this.get_selected_index();
-        var deleting_before_cursor = 0;
-        for (var i=0; i < indices.length; i++) {
-            if (!this.get_cell(indices[i]).is_deletable()) {
-                // If any cell is marked undeletable, cancel
-                return this;
-            }
-
-            if (indices[i] < cursor_ix_before) {
-                deleting_before_cursor++;
-            }
-        }
-
-        // If we started deleting cells from the top, the later indices would
-        // get offset. We sort them into descending order to avoid that.
-        indices.sort(function(a, b) {return b-a;});
-        for (i=0; i < indices.length; i++) {
-            var cell = this.get_cell(indices[i]);
-            this.undelete_backup.push(cell.toJSON());
-            this.get_cell_element(indices[i]).remove();
-            this.events.trigger('delete.Cell', {'cell': cell, 'index': indices[i]});
-        }
-
-        // Flip the backup copy of cells back to first-to-last order
-        this.undelete_backup.reverse();
-
-        var new_ncells = this.ncells();
-        // Always make sure we have at least one cell.
-        if (new_ncells === 0) {
-            this.insert_cell_below('code');
-            new_ncells = 1;
-        }
-
-        this.undelete_below = false;
-        var cursor_ix_after = this.get_selected_index();
-        if (cursor_ix_after === null) {
-            // Selected cell was deleted
-            cursor_ix_after = cursor_ix_before - deleting_before_cursor;
-            if (cursor_ix_after >= new_ncells) {
-                cursor_ix_after = new_ncells - 1;
-                this.undelete_below = true;
-            }
-            this.select(cursor_ix_after);
-        }
-
-        // This will put all the deleted cells back in one location, rather than
-        // where they came from. It will do until we have proper undo support.
-        this.undelete_index = cursor_ix_after;
-        $('#undelete_cell').removeClass('disabled');
-
-        this.set_dirty(true);
-
-        return this;
-    };
-
     /**
      * Delete a cell from the notebook.
      * 
@@ -981,36 +919,69 @@ define(function (require) {
      * @return {Notebook} This notebook
      */
     Notebook.prototype.delete_cell = function (index) {
-        if (index === undefined) {
-            return this.delete_cells();
-        } else {
-            return this.delete_cells([index]);
+        var i = this.index_or_selected(index);
+        var cell = this.get_cell(i);
+        if (!cell.is_deletable()) {
+            return this;
         }
+
+        this.undelete_backup = cell.toJSON();
+        $('#undelete_cell').removeClass('disabled');
+        if (this.is_valid_cell_index(i)) {
+            var old_ncells = this.ncells();
+            var ce = this.get_cell_element(i);
+            ce.remove();
+            if (i === 0) {
+                // Always make sure we have at least one cell.
+                if (old_ncells === 1) {
+                    this.insert_cell_below('code');
+                }
+                this.select(0);
+                this.undelete_index = 0;
+                this.undelete_below = false;
+            } else if (i === old_ncells-1 && i !== 0) {
+                this.select(i-1);
+                this.undelete_index = i - 1;
+                this.undelete_below = true;
+            } else {
+                this.select(i);
+                this.undelete_index = i;
+                this.undelete_below = false;
+            }
+            this.events.trigger('delete.Cell', {'cell': cell, 'index': i});
+            this.set_dirty(true);
+        }
+        return this;
     };
 
     /**
-     * Restore the most recently deleted cells.
+     * Restore the most recently deleted cell.
      */
     Notebook.prototype.undelete_cell = function() {
         if (this.undelete_backup !== null && this.undelete_index !== null) {
-            var i, cell_data, new_cell;
-            if (this.undelete_below) {
-                for (i = this.undelete_backup.length-1; i >= 0; i--) {
-                    cell_data = this.undelete_backup[i];
-                    new_cell = this.insert_cell_below(cell_data.cell_type,
-                        this.undelete_index);
-                    new_cell.fromJSON(cell_data);
-                }
-            } else {
-                for (i=0; i < this.undelete_backup.length; i++) {
-                    cell_data = this.undelete_backup[i];
-                    new_cell = this.insert_cell_above(cell_data.cell_type,
-                        this.undelete_index);
-                    new_cell.fromJSON(cell_data);
-                }
+            var current_index = this.get_selected_index();
+            if (this.undelete_index < current_index) {
+                current_index = current_index + 1;
             }
-
-            this.set_dirty(true);
+            if (this.undelete_index >= this.ncells()) {
+                this.select(this.ncells() - 1);
+            }
+            else {
+                this.select(this.undelete_index);
+            }
+            var cell_data = this.undelete_backup;
+            var new_cell = null;
+            if (this.undelete_below) {
+                new_cell = this.insert_cell_below(cell_data.cell_type);
+            } else {
+                new_cell = this.insert_cell_above(cell_data.cell_type);
+            }
+            new_cell.fromJSON(cell_data);
+            if (this.undelete_below) {
+                this.select(current_index+1);
+            } else {
+                this.select(current_index);
+            }
             this.undelete_backup = null;
             this.undelete_index = null;
         }
@@ -1344,76 +1315,53 @@ define(function (require) {
     };
 
     /**
-     * Copy cells.
+     * Copy a cell.
      */
     Notebook.prototype.copy_cell = function () {
-        var cells = this.get_selected_cells();
-        this.clipboard = [];
-        var cell_json;
-        for (var i=0; i < cells.length; i++) {
-            cell_json = cells[i].toJSON();
-            if (cell_json.metadata.deletable !== undefined) {
-                delete cell_json.metadata.deletable;
-            }
-            this.clipboard.push(cell_json);
+        var cell = this.get_selected_cell();
+        this.clipboard = cell.toJSON();
+        // remove undeletable status from the copied cell
+        if (this.clipboard.metadata.deletable !== undefined) {
+            delete this.clipboard.metadata.deletable;
         }
         this.enable_paste();
     };
 
     /**
-     * Replace the selected cell with the cells in the clipboard.
+     * Replace the selected cell with the cell in the clipboard.
      */
     Notebook.prototype.paste_cell_replace = function () {
         if (this.clipboard !== null && this.paste_enabled) {
-            var first_inserted = null;
-            for (var i=0; i < this.clipboard.length; i++) {
-                var cell_data = this.clipboard;
-                var new_cell = this.insert_cell_above(cell_data.cell_type);
-                new_cell.fromJSON(cell_data);
-                if (first_inserted === null) {
-                    first_inserted = new_cell;
-                }
-            }
-            var old_selected = this.get_selected_index();
-            this.select(this.find_cell_index(first_inserted));
-            this.delete_cell(old_selected);
+            var cell_data = this.clipboard;
+            var new_cell = this.insert_cell_above(cell_data.cell_type);
+            new_cell.fromJSON(cell_data);
+            var old_cell = this.get_next_cell(new_cell);
+            this.delete_cell(this.find_cell_index(old_cell));
+            this.select(this.find_cell_index(new_cell));
         }
     };
 
     /**
-     * Paste cells from the clipboard above the selected cell.
+     * Paste a cell from the clipboard above the selected cell.
      */
     Notebook.prototype.paste_cell_above = function () {
         if (this.clipboard !== null && this.paste_enabled) {
-            var first_inserted = null;
-            for (var i=0; i < this.clipboard.length; i++) {
-                var cell_data = this.clipboard[i];
-                var new_cell = this.insert_cell_above(cell_data.cell_type);
-                new_cell.fromJSON(cell_data);
-                if (first_inserted === null) {
-                    first_inserted = new_cell;
-                }
-
-            }
-            first_inserted.focus_cell();
+            var cell_data = this.clipboard;
+            var new_cell = this.insert_cell_above(cell_data.cell_type);
+            new_cell.fromJSON(cell_data);
+            new_cell.focus_cell();
         }
     };
 
     /**
-     * Paste cells from the clipboard below the selected cell.
+     * Paste a cell from the clipboard below the selected cell.
      */
     Notebook.prototype.paste_cell_below = function () {
         if (this.clipboard !== null && this.paste_enabled) {
-            var first_inserted = null;
-            for (var i = this.clipboard.length-1; i >= 0; i--) {
-                var cell_data = this.clipboard[i];
-                var new_cell = this.insert_cell_below(cell_data.cell_type);
-                new_cell.fromJSON(cell_data);
-                if (first_inserted === null) {
-                    first_inserted = new_cell;
-                }
-            }
-            first_inserted.focus_cell();
+            var cell_data = this.clipboard;
+            var new_cell = this.insert_cell_below(cell_data.cell_type);
+            new_cell.fromJSON(cell_data);
+            new_cell.focus_cell();
         }
     };
 
@@ -1445,13 +1393,6 @@ define(function (require) {
         if (indices.length <= 1) {
             return;
         }
-
-        // Check if trying to merge above on topmost cell or wrap around
-        // when merging above, see #330
-        if (indices.filter(function(item) {return item < 0}).length > 0) {
-            return;
-        }
-
         for (var i=0; i < indices.length; i++) {
             if (!this.get_cell(indices[i]).is_mergeable()) {
                 return;
@@ -1465,9 +1406,9 @@ define(function (require) {
             contents.push(this.get_cell(indices[i]).get_text());
         }
         if (into_last) {
-            contents.push(target.get_text());
+            contents.push(target.get_text())
         } else {
-            contents.unshift(target.get_text());
+            contents.unshift(target.get_text())
         }
 
         // Update the contents of the target cell
@@ -1485,7 +1426,12 @@ define(function (require) {
         }
 
         // Delete the other cells
-        this.delete_cells(indices);
+        // If we started deleting cells from the top, the later indices would
+        // get offset. We sort them into descending order to avoid that.
+        indices.sort(function(a, b) {return b-a;});
+        for (i=0; i < indices.length; i++) {
+            this.delete_cell(indices[i]);
+        }
 
         this.select(this.find_cell_index(target));
     };
@@ -1502,7 +1448,7 @@ define(function (require) {
      */
     Notebook.prototype.merge_cell_above = function () {
         var index = this.get_selected_index();
-        this.merge_cells([index-1, index], true);
+        this.merge_cells([index-1, index], true)
     };
 
     /**
@@ -1510,7 +1456,7 @@ define(function (require) {
      */
     Notebook.prototype.merge_cell_below = function () {
         var index = this.get_selected_index();
-        this.merge_cells([index, index+1], false);
+        this.merge_cells([index, index+1], false)
     };
 
 
@@ -1771,6 +1717,10 @@ define(function (require) {
     Notebook.prototype._session_started = function (){
         this._session_starting = false;
         this.kernel = this.session.kernel;
+        if (this.remote === null) {
+          this.remote = new remote.Remote(this.master_url, this.session.id);
+          this.remote.start_channel();
+        }
         var ncells = this.ncells();
         for (var i=0; i<ncells; i++) {
             var cell = this.get_cell(i);
@@ -1793,22 +1743,9 @@ define(function (require) {
      */
     Notebook.prototype.restart_kernel = function () {
         var that = this;
-        var resolve_promise, reject_promise;
-        var promise = new Promise(function (resolve, reject){
-            resolve_promise = resolve;
-            reject_promise = reject;
-        });
-        
-        function restart_and_resolve () {
-            that.kernel.restart(function () {
-                // resolve when the kernel is *ready* not just started
-                that.events.one('kernel_ready.Kernel', resolve_promise);
-            }, reject_promise);
-        }
-    
         dialog.modal({
-            notebook: that,
-            keyboard_manager: that.keyboard_manager,
+            notebook: this,
+            keyboard_manager: this.keyboard_manager,
             title : "Restart kernel or continue running?",
             body : $("<p/>").text(
                 'Do you want to restart the current kernel?  You will lose all variables defined in it.'
@@ -1819,18 +1756,17 @@ define(function (require) {
                     "class" : "btn-danger",
                     "click" : function(){
                         that.clear_all_output();
-                        restart_and_resolve();
+                        that.kernel.restart();
                     },
                 },
                 "Restart" : {
                     "class" : "btn-warning",
                     "click" : function() {
-                        restart_and_resolve();
+                        that.kernel.restart();
                     }
                 },
             }
         });
-        return promise;
     };
     
     /**
