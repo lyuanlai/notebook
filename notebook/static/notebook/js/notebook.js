@@ -266,9 +266,11 @@ define(function (require) {
           console.log('exec.Remote', data);
           var cells = data.exec;
           for (var i = 0; i < cells.length; i++) {
-            that.scroll_to_cell(cells[i], 1000);
-            that.select(cells[i]);
+            var idx = cells[i];
+            that.scroll_to_cell(idx, 1000);
+            that.select(idx);
             that.execute_cell();
+            that.expand_output(idx);
           }
         });
 
